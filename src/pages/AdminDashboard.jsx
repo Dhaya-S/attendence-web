@@ -23,7 +23,6 @@ import {
   FileText, Lock,
 } from "lucide-react";
 import toast from "react-hot-toast";
-import emailjs from '@emailjs/browser';
 
 const AdminDashboard = () => {
   const [companies, setCompanies] = useState([]);
@@ -199,28 +198,6 @@ const AdminDashboard = () => {
           },
         });
         console.log("Email successfully queued in Firestore 'mail' collection.");
-
-        // 2. EmailJS approach (Direct Client Sending)
-        // NOTE: Replace these with actual EmailJS keys from https://www.emailjs.com/
-        // If you haven't set up EmailJS yet, sign up, create an Email Service, and an Email Template.
-        const SERVICE_ID = "YOUR_SERVICE_ID"; 
-        const TEMPLATE_ID = "YOUR_TEMPLATE_ID";
-        const PUBLIC_KEY = "YOUR_PUBLIC_KEY";
-
-        if (SERVICE_ID !== "YOUR_SERVICE_ID") {
-          const templateParams = {
-            to_email: managerEmail,
-            to_name: managerName,
-            company_name: company.companyName,
-            password: password,
-            login_url: `${window.location.origin}/login`
-          };
-          
-          await emailjs.send(SERVICE_ID, TEMPLATE_ID, templateParams, PUBLIC_KEY);
-          console.log("Email successfully sent via EmailJS.");
-        } else {
-          console.warn("EmailJS credentials not set. Ensure Firebase Trigger Email extension is active if you want to use the 'mail' collection.");
-        }
 
       } catch (e) {
         console.error("Failed to process welcome email:", e);
