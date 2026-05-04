@@ -164,7 +164,6 @@ const AdminDashboard = () => {
       try {
         console.log("Attempting to queue welcome email for:", managerEmail);
         
-        // 1. Firebase Mail Extension approach (fallback)
         await addDoc(collection(db, "mail"), {
           to: managerEmail,
           message: {
@@ -201,7 +200,7 @@ const AdminDashboard = () => {
 
       } catch (e) {
         console.error("Failed to process welcome email:", e);
-        toast.error("Company approved, but system encountered an issue sending the email. Check Console for details.");
+        toast.error("Company approved, but system encountered an issue queuing the email.");
       }
 
       // 6. Success Notification
