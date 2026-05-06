@@ -5,7 +5,6 @@ import LoginPage from "./pages/LoginPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import CompanyRegistration from "./pages/CompanyRegistration";
 import LandingPage from "./pages/LandingPage";
-import AdminLoginPage from "./pages/AdminLoginPage";
 import Settings from "./pages/Settings";
 import Dashboard from "./pages/Dashboard";
 import { Toaster } from "react-hot-toast";
@@ -49,7 +48,8 @@ const RoleRedirect = () => {
   }
 
   if (!currentUser) return <Navigate to="/" replace />;
-  return <Navigate to="/home" replace />;
+  if (userRole === "admin") return <Navigate to="/admin" replace />;
+  return <Navigate to="/dashboard" replace />;
 };
 
 function App() {
@@ -83,7 +83,6 @@ function App() {
           <Route path="/" element={<LoginPage />} />
           <Route path="/home" element={<LandingPage />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
-          <Route path="/admin-login" element={<AdminLoginPage />} />
           <Route path="/redirect" element={<RoleRedirect />} />
           <Route path="/register-company" element={<CompanyRegistration />} />
           <Route

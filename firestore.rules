@@ -29,8 +29,19 @@ service cloud.firestore {
         (resource != null && resource.data.companyId == userCompanyId()) || 
         isAdmin()
       );
+      
       allow write: if isAdmin() || (
-        isSignedIn() && request.resource.data.companyId == userCompanyId()
+        isSignedIn() && request.auth.token.email == email &&
+        // Prevent modification of critical fields
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.companyId == resource.data.companyId
+      );
+
+      // Managers can create new employee mappings
+      allow create: if isAdmin() || (
+        isSignedIn() && exists(/databases/$(database)/documents/approved_users/$(request.auth.token.email)) &&
+        get(/databases/$(database)/documents/approved_users/$(request.auth.token.email)).data.role == "manager" &&
+        request.resource.data.companyId == userCompanyId()
       );
     }
     
@@ -159,7 +170,25 @@ service cloud.firestore {
 
     // 4. Legacy top-level collections (kept for backward compat during migration)
     match /companies/{companyId} {
-      allow read, write: if isSignedIn();
+      // Allow creators, designated managers, and admins to read
+      allow read: if isSignedIn() && (
+        (resource != null && resource.data.registeredBy == request.auth.uid) || 
+        (resource != null && resource.data.managerEmail == request.auth.token.email) ||
+        isAdmin()
+      );
+
+      // Allow any signed-in user to submit a NEW registration
+      allow create: if isSignedIn() && 
+        request.resource.data.status == "pending" &&
+        request.resource.data.registeredBy == request.auth.uid;
+
+      // Only admins can update status or delete
+      allow update: if isAdmin() || (
+        isSignedIn() && resource.data.registeredBy == request.auth.uid &&
+        request.resource.data.status == resource.data.status // Prevent self-approval
+      );
+      
+      allow delete: if isAdmin();
     }
 
     match /users/{userId} {

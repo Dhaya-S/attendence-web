@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import {
   collection,
   query,
@@ -13,29 +13,28 @@ import {
 import { db, firebaseConfig } from "../services/firebase";
 import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, createUserWithEmailAndPassword, signOut } from "firebase/auth";
-import Navbar from "../components/Navbar";
+import { useNavigate } from "react-router-dom";
 import {
-  Building2, MapPin, Mail, Users, Clock, Check, X,
-  Search, Filter, BarChart3, TrendingUp, AlertCircle,
-  ChevronRight, Eye, MoreVertical, Download, RefreshCw,
-  Shield, CheckCircle2, XCircle, Hourglass, UserCog,
-  ChevronDown, ChevronUp, Phone, Globe, Briefcase,
-  FileText, Lock,
+  Home, LayoutDashboard, Settings, LogOut,
+  Building2, Users, CheckCircle, FileText,
+  Clock, CheckCircle2, XCircle, Filter, Download,
+  MapPin, ChevronLeft, ChevronRight, Eye, RefreshCw, X, Check, Lock, Save, Shield
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { useAuth } from "../contexts/AuthContext";
 
 const AdminDashboard = () => {
+  const [activeTab, setActiveTab] = useState("dashboard"); // "home", "dashboard", "settings"
   const [companies, setCompanies] = useState([]);
-  const [activeTab, setActiveTab] = useState("pending");
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState("");
   const [actionLoading, setActionLoading] = useState(null);
-  const [expandedCard, setExpandedCard] = useState(null);
-  const [passwords, setPasswords] = useState({});
+  
+  // Modal State
+  const [selectedCompany, setSelectedCompany] = useState(null);
+  const [managerPassword, setManagerPassword] = useState("");
 
-  const handlePasswordChange = (companyId, value) => {
-    setPasswords(prev => ({ ...prev, [companyId]: value }));
-  };
+  const navigate = useNavigate();
+  const { logout } = useAuth();
 
   useEffect(() => {
     const q = query(collection(db, "companies"), orderBy("createdAt", "desc"));
@@ -46,171 +45,136 @@ const AdminDashboard = () => {
       }));
       setCompanies(companyList);
       setLoading(false);
-    }, (error) => {
-      console.error("Error fetching companies:", error);
-      toast.error("Failed to load companies");
-      setLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
-  /**
-   * When admin approves a company:
-   * 1. Update company status to "approved"
-   * 2. Create a unique companyId-based document under "approved_companies"
-   * 3. Set up the manager as a user under that company's subcollection
-   * 4. Each company gets isolated subcollections:
-   *    - approved_companies/{companyId}/users/
-   *    - approved_companies/{companyId}/attendance/
-   *    - approved_companies/{companyId}/leave_requests/
-   *    - approved_companies/{companyId}/notifications/
-   */
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate("/");
+    } catch (error) {
+      toast.error("Failed to log out");
+    }
+  };
+
   const handleApprove = async (company) => {
     setActionLoading(company.id);
     try {
       const companyId = company.id;
-      const managerEmail = company.managerEmail || `manager_${companyId}@placeholder.com`;
-      const managerName = company.managerName || "Company Manager";
+      const managerEmail = company.managerEmail;
+      const managerName = company.managerName || company.adminFullName || "Company Manager";
 
-      const password = passwords[companyId]?.trim() || Math.random().toString(36).slice(-8);
+      const automaticPassword = Math.random().toString(36).slice(-8);
+      const finalPassword = managerPassword.trim() !== "" 
+        ? managerPassword 
+        : (company.password || automaticPassword);
 
-      // Validate password length for Firebase Auth (min 6 chars)
-      if (password.length < 6) {
+      if (finalPassword.length < 6) {
         throw new Error("Password must be at least 6 characters long.");
       }
 
-      // 0. Create the manager in Firebase Auth
       let authUid = null;
       const secondaryAppName = `SecondaryApp_${companyId}_${Date.now()}`;
       const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
       const secondaryAuth = getAuth(secondaryApp);
       
       try {
-        const userCredential = await createUserWithEmailAndPassword(secondaryAuth, managerEmail, password);
+        const userCredential = await createUserWithEmailAndPassword(secondaryAuth, managerEmail, finalPassword);
         authUid = userCredential.user.uid;
         await signOut(secondaryAuth);
         await deleteApp(secondaryApp);
       } catch (authError) {
         console.warn("Auth creation step failed:", authError);
         await deleteApp(secondaryApp);
-        // Only ignore if the user already exists
         if (authError.code !== 'auth/email-already-in-use') {
           throw new Error(`Auth Error: ${authError.message}`);
         }
       }
 
-      // 1. Update 'companies' registration status
-      try {
-        await updateDoc(doc(db, "companies", companyId), {
-          status: "approved",
-          approvedAt: serverTimestamp(),
-          companyId: companyId,
-          authUid: authUid,
-        });
-      } catch (e) { throw new Error(`Companies Table Error: ${e.message}`); }
+      await updateDoc(doc(db, "companies", companyId), {
+        status: "approved",
+        approvedAt: serverTimestamp(),
+        companyId: companyId,
+        authUid: authUid,
+        password: finalPassword
+      });
 
-      // 2. Create 'approved_companies' document
-      try {
-        await setDoc(doc(db, "approved_companies", companyId), {
-          companyName: company.companyName || "Unnamed Company",
-          officialEmail: company.officialEmail || "",
-          phone: company.phone || "",
-          industry: company.industry || "",
-          website: company.website || "",
-          employeeCount: company.employeeCount || "0-10",
-          location: company.location || {},
-          managerName: managerName,
-          managerEmail: managerEmail,
-          adminFullName: company.adminFullName || "Admin",
-          status: "active",
-          approvedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        });
-      } catch (e) { throw new Error(`Approved Companies Error: ${e.message} (Check Firestore Rules)`); }
+      await setDoc(doc(db, "approved_companies", companyId), {
+        companyName: company.companyName || "Unnamed Company",
+        officialEmail: company.officialEmail || "",
+        phone: company.phone || "",
+        industry: company.industry || "",
+        website: company.website || "",
+        employeeCount: company.employeeCount || "0-10",
+        location: company.location || {},
+        managerName: managerName,
+        managerEmail: managerEmail,
+        adminFullName: company.adminFullName || "Admin",
+        status: "active",
+        approvedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+        password: finalPassword,
+      });
 
-      // 3. Create manager user record
-      try {
-        const managerDocId = managerEmail.replace(/[.#$/\[\]]/g, "_");
-        await setDoc(
-          doc(db, "approved_companies", companyId, "users", managerDocId),
-          {
-            uid: authUid,
-            email: managerEmail,
-            name: managerName,
-            role: "manager",
-            status: "approved",
-            companyId: companyId,
-            joinedAt: serverTimestamp(),
-          }
-        );
-      } catch (e) { throw new Error(`Manager Record Error: ${e.message}`); }
-
-      // 4. Create 'approved_users' mapping
-      try {
-        const normalizedEmail = managerEmail.toLowerCase().trim();
-        await setDoc(doc(db, "approved_users", normalizedEmail), {
+      const managerDocId = managerEmail.replace(/[.#$/\[\]]/g, "_");
+      await setDoc(
+        doc(db, "approved_companies", companyId, "users", managerDocId),
+        {
           uid: authUid,
-          companyId: companyId,
-          role: "manager",
-          email: normalizedEmail,
+          email: managerEmail,
           name: managerName,
-          status: "active",
-          updatedAt: serverTimestamp()
-        });
-      } catch (e) { throw new Error(`Global User Mapping Error: ${e.message}`); }
+          role: "manager",
+          status: "approved",
+          companyId: companyId,
+          joinedAt: serverTimestamp(),
+        }
+      );
 
-      // 5. Send Welcome Email
-      try {
-        console.log("Attempting to queue welcome email for:", managerEmail);
-        
-        await addDoc(collection(db, "mail"), {
-          to: managerEmail,
-          message: {
-            subject: `Welcome to Attendance System - ${company.companyName}`,
-            html: `
-              <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                <div style="background-color: #4f46e5; padding: 24px; text-align: center; color: white;">
-                  <h1 style="margin: 0;">Welcome to the Platform!</h1>
-                </div>
-                <div style="padding: 24px; color: #374151; line-height: 1.6;">
-                  <p>Hello <strong>${managerName}</strong>,</p>
-                  <p>Your company registration for <strong>${company.companyName}</strong> has been approved by our administrators.</p>
-                  
-                  <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 24px 0;">
-                    <h3 style="margin-top: 0; color: #111827;">Your Login Credentials</h3>
-                    <p style="margin: 4px 0;"><strong>Email:</strong> ${managerEmail}</p>
-                    <p style="margin: 4px 0;"><strong>Password:</strong> <code style="background: #fff; padding: 2px 4px; border-radius: 4px; border: 1px solid #d1d5db;">${password}</code></p>
-                  </div>
+      const normalizedEmail = managerEmail.toLowerCase().trim();
+      await setDoc(doc(db, "approved_users", normalizedEmail), {
+        uid: authUid,
+        companyId: companyId,
+        role: "manager",
+        email: normalizedEmail,
+        name: managerName,
+        status: "active",
+        updatedAt: serverTimestamp()
+      });
 
-                  <p>You can now log in to the manager dashboard to start managing your employees and attendance.</p>
-                  
-                  <div style="text-align: center; margin-top: 32px;">
-                    <a href="${window.location.origin}/login" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Log In Now</a>
-                  </div>
+      await addDoc(collection(db, "mail"), {
+        to: managerEmail,
+        message: {
+          subject: `Welcome to Attendance System - ${company.companyName}`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+              <div style="background-color: #4f46e5; padding: 24px; text-align: center; color: white;">
+                <h1 style="margin: 0;">Welcome to the Platform!</h1>
+              </div>
+              <div style="padding: 24px; color: #374151; line-height: 1.6;">
+                <p>Hello <strong>${managerName}</strong>,</p>
+                <p>Your company registration for <strong>${company.companyName}</strong> has been approved by our administrators.</p>
+                <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 24px 0;">
+                  <h3 style="margin-top: 0; color: #111827;">Your Login Credentials</h3>
+                  <p style="margin: 4px 0;"><strong>Email:</strong> ${managerEmail}</p>
+                  <p style="margin: 4px 0;"><strong>Password:</strong> ${finalPassword}</p>
                 </div>
-                <div style="background-color: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e0e0e0;">
-                  <p>© ${new Date().getFullYear()} Attendance System. All rights reserved.</p>
+                <p>You can now log in to the manager dashboard to start managing your employees and attendance.</p>
+                <div style="text-align: center; margin-top: 32px;">
+                  <a href="${window.location.origin}/login" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Log In Now</a>
                 </div>
               </div>
-            `,
-          },
-        });
-        console.log("Email successfully queued in Firestore 'mail' collection.");
+            </div>
+          `,
+        },
+      });
 
-      } catch (e) {
-        console.error("Failed to process welcome email:", e);
-        toast.error("Company approved, but system encountered an issue queuing the email.");
-      }
-
-      // 6. Success Notification
-      toast.success(
-        `${company.companyName} approved successfully! \nManager: ${managerEmail}\nPassword: ${password}`,
-        { duration: 10000 }
-      );
+      toast.success(`${company.companyName} approved successfully!`);
+      setManagerPassword("");
+      setSelectedCompany(null);
     } catch (error) {
       console.error("Critical Approval Failure:", error);
-      toast.error(error.message, { duration: 6000 });
+      toast.error(error.message);
     }
     setActionLoading(null);
   };
@@ -223,6 +187,7 @@ const AdminDashboard = () => {
         rejectedAt: serverTimestamp(),
       });
       toast.success("Company rejected");
+      setSelectedCompany(null);
     } catch (error) {
       console.error("Reject error:", error);
       toast.error("Failed to reject company");
@@ -230,359 +195,1207 @@ const AdminDashboard = () => {
     setActionLoading(null);
   };
 
-  const toggleExpand = (id) => {
-    setExpandedCard(expandedCard === id ? null : id);
-  };
-
-  const filteredCompanies = companies.filter((company) => {
-    const matchesTab = activeTab === "all"
-      ? true
-      : company.status === activeTab;
-    const matchesSearch = company.companyName
-      ?.toLowerCase()
-      .includes(searchTerm.toLowerCase()) ||
-      company.officialEmail?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      company.adminFullName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      company.managerEmail?.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesTab && matchesSearch;
-  });
-
+  // Status Counts
   const stats = {
     total: companies.length,
-    pending: companies.filter((c) => c.status === "pending").length,
-    approved: companies.filter((c) => c.status === "approved").length,
-    rejected: companies.filter((c) => c.status === "rejected").length,
+    pending: companies.filter(c => c.status === "pending").length,
+    approved: companies.filter(c => c.status === "approved").length,
+    rejected: companies.filter(c => c.status === "rejected").length,
   };
 
-  const formatDate = (timestamp) => {
-    if (!timestamp) return "N/A";
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-    return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  };
+  const activeCompanies = stats.approved;
+  const totalEmployees = companies.reduce((acc, c) => {
+    const num = parseInt(c.employeeCount) || 0;
+    return acc + num;
+  }, 0);
 
-  return (
-    <div className="app-layout">
-      <Navbar />
-      <div className="page-content">
-        <div className="admin-dashboard">
-          {/* Dashboard Header */}
-          <div className="dashboard-header">
-            <div>
-              <h1>Admin Dashboard</h1>
-              <p>Manage company registrations and onboarding</p>
-            </div>
-            <div className="header-actions">
-              <button className="btn-icon" title="Refresh">
-                <RefreshCw size={16} />
-              </button>
-              <button className="btn-icon" title="Download Report">
-                <Download size={16} />
-              </button>
-            </div>
+  // Component Renders
+  const renderHome = () => (
+    <div className="admin-content animate-fade-in">
+      <div className="admin-header">
+        <div>
+          <h1 className="admin-page-title">Admin Dashboard</h1>
+          <p className="admin-page-subtitle">Monitor companies, employees, and platform activity</p>
+        </div>
+        <button className="admin-btn-outline">
+          <Download size={16} /> Export Report
+        </button>
+      </div>
+
+      <div className="admin-stats-grid">
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon purple"><Building2 size={18} /></div>
+            <div className="stat-badge positive">+12%</div>
           </div>
-
-          {/* Stats Cards */}
-          <div className="stats-grid">
-            <div className="stat-card total">
-              <div className="stat-card-icon">
-                <Building2 size={20} />
-              </div>
-              <div className="stat-card-content">
-                <span className="stat-card-value">{stats.total}</span>
-                <span className="stat-card-label">Total Companies</span>
-              </div>
-            </div>
-            <div className="stat-card pending">
-              <div className="stat-card-icon">
-                <Hourglass size={20} />
-              </div>
-              <div className="stat-card-content">
-                <span className="stat-card-value">{stats.pending}</span>
-                <span className="stat-card-label">Pending Review</span>
-              </div>
-            </div>
-            <div className="stat-card approved">
-              <div className="stat-card-icon">
-                <CheckCircle2 size={20} />
-              </div>
-              <div className="stat-card-content">
-                <span className="stat-card-value">{stats.approved}</span>
-                <span className="stat-card-label">Approved</span>
-              </div>
-            </div>
-            <div className="stat-card rejected">
-              <div className="stat-card-icon">
-                <XCircle size={20} />
-              </div>
-              <div className="stat-card-content">
-                <span className="stat-card-value">{stats.rejected}</span>
-                <span className="stat-card-label">Rejected</span>
-              </div>
-            </div>
+          <h2 className="stat-value">{stats.total}</h2>
+          <p className="stat-label">TOTAL COMPANIES</p>
+        </div>
+        
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon blue"><Users size={18} /></div>
+            <div className="stat-badge positive">+5.4%</div>
           </div>
+          <h2 className="stat-value">{totalEmployees.toLocaleString()}</h2>
+          <p className="stat-label">TOTAL EMPLOYEES</p>
+        </div>
 
-          {/* Tabs & Search */}
-          <div className="dashboard-controls">
-            <div className="tab-bar">
-              <button
-                className={`tab-btn ${activeTab === "pending" ? "active" : ""}`}
-                onClick={() => setActiveTab("pending")}
-              >
-                <Hourglass size={14} />
-                Pending
-                {stats.pending > 0 && <span className="tab-count">{stats.pending}</span>}
-              </button>
-              <button
-                className={`tab-btn ${activeTab === "approved" ? "active" : ""}`}
-                onClick={() => setActiveTab("approved")}
-              >
-                <CheckCircle2 size={14} />
-                Approved
-                {stats.approved > 0 && <span className="tab-count approved">{stats.approved}</span>}
-              </button>
-              <button
-                className={`tab-btn ${activeTab === "rejected" ? "active" : ""}`}
-                onClick={() => setActiveTab("rejected")}
-              >
-                <XCircle size={14} />
-                Rejected
-              </button>
-              <button
-                className={`tab-btn ${activeTab === "all" ? "active" : ""}`}
-                onClick={() => setActiveTab("all")}
-              >
-                All
-              </button>
-            </div>
-
-            <div className="search-bar">
-              <Search size={16} />
-              <input
-                type="text"
-                placeholder="Search companies, manager emails..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon dark-purple"><CheckCircle size={18} /></div>
+            <div className="stat-target">Target: 100</div>
           </div>
+          <h2 className="stat-value">{activeCompanies}</h2>
+          <p className="stat-label">ACTIVE COMPANIES</p>
+        </div>
+      </div>
 
-          {/* Company List */}
-          <div className="companies-list">
-            {loading ? (
-              <div className="loading-state">
-                <div className="spinner"></div>
-                <p>Loading companies...</p>
-              </div>
-            ) : filteredCompanies.length === 0 ? (
-              <div className="empty-state">
-                <Building2 size={48} />
-                <h3>No companies found</h3>
-                <p>
-                  {activeTab === "pending"
-                    ? "No pending applications at the moment."
-                    : activeTab === "approved"
-                    ? "No approved companies yet."
-                    : activeTab === "rejected"
-                    ? "No rejected companies."
-                    : "No companies registered yet."}
-                </p>
-              </div>
-            ) : (
-              filteredCompanies.map((company) => (
-                <div key={company.id} className={`company-card status-${company.status}`}>
-                  <div className="company-card-main">
-                    <div className="company-avatar">
-                      <Building2 size={20} />
-                    </div>
-                    <div className="company-info">
-                      <div className="company-name-row">
-                        <h3>{company.companyName}</h3>
-                        <span className={`status-badge ${company.status}`}>
-                          {company.status === "pending" && <Hourglass size={12} />}
-                          {company.status === "approved" && <CheckCircle2 size={12} />}
-                          {company.status === "rejected" && <XCircle size={12} />}
-                          {company.status}
-                        </span>
-                      </div>
-                      <div className="company-meta">
-                        <span className="meta-item">
-                          <UserIcon size={13} />
-                          {company.adminFullName || "N/A"}
-                        </span>
-                        <span className="meta-item">
-                          <Mail size={13} />
-                          {company.officialEmail || company.registeredEmail}
-                        </span>
-                        <span className="meta-item">
-                          <MapPin size={13} />
-                          {company.location?.city
-                            ? `${company.location.city}, ${company.location.state}`
-                            : "Location not set"}
-                        </span>
-                        <span className="meta-item">
-                          <Users size={13} />
-                          {company.employeeCount || "N/A"} employees
-                        </span>
-                        <span className="meta-item">
-                          <Clock size={13} />
-                          {formatDate(company.createdAt)}
-                        </span>
-                      </div>
-
-                      {/* Manager Info Highlight */}
-                      {company.managerEmail && (
-                        <div className="manager-highlight">
-                          <UserCog size={14} />
-                          <span>Manager: <strong>{company.managerName || "N/A"}</strong> — {company.managerEmail}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <button
-                      className="expand-btn"
-                      onClick={() => toggleExpand(company.id)}
-                      title="View details"
-                    >
-                      {expandedCard === company.id ? (
-                        <ChevronUp size={16} />
-                      ) : (
-                        <ChevronDown size={16} />
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Expanded Details */}
-                  {expandedCard === company.id && (
-                    <div className="company-expanded">
-                      <div className="expanded-grid">
-                        <div className="expanded-item">
-                          <Globe size={14} />
-                          <span className="expanded-label">Website</span>
-                          <span className="expanded-value">{company.website || "N/A"}</span>
-                        </div>
-                        <div className="expanded-item">
-                          <Briefcase size={14} />
-                          <span className="expanded-label">Industry</span>
-                          <span className="expanded-value">{company.industry || "N/A"}</span>
-                        </div>
-                        <div className="expanded-item">
-                          <Phone size={14} />
-                          <span className="expanded-label">Phone</span>
-                          <span className="expanded-value">{company.phone || "N/A"}</span>
-                        </div>
-                        <div className="expanded-item">
-                          <Mail size={14} />
-                          <span className="expanded-label">Work Email</span>
-                          <span className="expanded-value">{company.adminWorkEmail || "N/A"}</span>
-                        </div>
-                        <div className="expanded-item full-span">
-                          <MapPin size={14} />
-                          <span className="expanded-label">Full Address</span>
-                          <span className="expanded-value">
-                            {company.location?.streetAddress
-                              ? `${company.location.streetAddress}, ${company.location.city}, ${company.location.state} - ${company.location.pinCode}`
-                              : "Not provided"}
-                          </span>
-                        </div>
-                        {company.additionalNotes && (
-                          <div className="expanded-item full-span">
-                            <FileText size={14} />
-                            <span className="expanded-label">Notes</span>
-                            <span className="expanded-value">{company.additionalNotes}</span>
-                          </div>
-                        )}
-                        {company.status === "approved" && (
-                          <div className="expanded-item full-span approved-info">
-                            <Shield size={14} />
-                            <span className="expanded-label">Company ID</span>
-                            <span className="expanded-value mono">{company.companyId || company.id}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {company.status === "pending" && (
-                      <div className="approval-actions-container">
-                        <div className="password-setup">
-                          <Lock size={14} className="input-icon" />
-                          <input
-                            type="text"
-                            placeholder="Manager password (optional)"
-                            value={passwords[company.id] || ""}
-                            onChange={(e) => handlePasswordChange(company.id, e.target.value)}
-                            className="password-input"
-                          />
-                        </div>
-                        <div className="action-buttons-row">
-                          <button
-                            className="action-btn approve"
-                            onClick={() => handleApprove(company)}
-                            disabled={actionLoading === company.id}
-                          >
-                            {actionLoading === company.id ? (
-                              <span className="btn-spinner small"></span>
-                            ) : (
-                              <>
-                                <Check size={14} />
-                                Approve
-                              </>
-                            )}
-                          </button>
-                          <button
-                            className="action-btn reject"
-                            onClick={() => handleReject(company.id)}
-                            disabled={actionLoading === company.id}
-                          >
-                            <X size={14} />
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                  )}
-
-                  {company.status === "approved" && (
-                    <div className="company-actions">
-                      <button
-                        className="action-btn view"
-                        title="View Details"
-                        onClick={() => toggleExpand(company.id)}
-                      >
-                        <Eye size={14} />
-                        View
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
+      <div className="admin-chart-card">
+        <div className="chart-header">
+          <div>
+            <h3 className="chart-title">Company Growth</h3>
+            <p className="chart-subtitle">Active subscription trend over 6 months</p>
+          </div>
+          <div className="chart-toggles">
+            <button className="chart-toggle">Month</button>
+            <button className="chart-toggle active">Week</button>
+          </div>
+        </div>
+        <div className="chart-body">
+          {/* Mock CSS Bar Chart to match image */}
+          <div className="mock-chart">
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '40%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '55%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '35%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '70%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '45%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill" style={{ height: '85%' }}></div></div>
+            <div className="chart-bar"><div className="bar-fill active" style={{ height: '100%' }}></div></div>
           </div>
         </div>
       </div>
     </div>
   );
-};
 
-// User icon component used in company cards
-const UserIcon = ({ size, ...props }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    {...props}
-  >
-    <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-    <circle cx="12" cy="7" r="4" />
-  </svg>
-);
+  const renderDashboard = () => (
+    <div className="admin-content animate-fade-in">
+      <div className="admin-header">
+        <div>
+          <h1 className="admin-page-title">Welcome Back, Admin</h1>
+          <p className="admin-page-subtitle">Monitor and manage company onboarding requests with precision.</p>
+        </div>
+      </div>
+
+      <div className="admin-stats-grid four-cols">
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon purple"><FileText size={18} /></div>
+            <div className="stat-badge positive">+12%</div>
+          </div>
+          <p className="stat-label-top">Total Applications</p>
+          <h2 className="stat-value">{stats.total}</h2>
+        </div>
+
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon pink"><Clock size={18} /></div>
+            <div className="stat-toggle-switch"></div>
+          </div>
+          <p className="stat-label-top">Pending Reviews</p>
+          <h2 className="stat-value">{stats.pending}</h2>
+        </div>
+
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon gray"><CheckCircle2 size={18} /></div>
+          </div>
+          <p className="stat-label-top">Approved Companies</p>
+          <h2 className="stat-value">{stats.approved}</h2>
+        </div>
+
+        <div className="admin-stat-card">
+          <div className="stat-card-header">
+            <div className="stat-icon red"><XCircle size={18} /></div>
+          </div>
+          <p className="stat-label-top">Rejected Applications</p>
+          <h2 className="stat-value">{stats.rejected}</h2>
+        </div>
+      </div>
+
+      <div className="admin-table-card">
+        <div className="table-header">
+          <div>
+            <h3 className="table-title">Recent Applications</h3>
+            <p className="table-subtitle">Review and action the latest incoming requests</p>
+          </div>
+          <div className="table-actions">
+            <button className="admin-btn-gray"><Filter size={14} /> Filter</button>
+            <button className="admin-btn-gray"><Download size={14} /> Export</button>
+          </div>
+        </div>
+
+        <div className="table-container">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>COMPANY NAME</th>
+                <th>CONTACT PERSON</th>
+                <th>EMPLOYEES</th>
+                <th>LOCATION</th>
+                <th>STATUS</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {companies.slice(0, 10).map((company) => {
+                const initials = company.companyName?.substring(0, 2).toUpperCase() || "C";
+                return (
+                  <tr key={company.id}>
+                    <td>
+                      <div className="table-cell-company">
+                        <div className="company-avatar">{initials}</div>
+                        <div>
+                          <div className="company-name-bold">{company.companyName}</div>
+                          <div className="company-subtext">{company.website || "No website"}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div>
+                        <div className="contact-name">{company.adminFullName || company.managerName}</div>
+                        <div className="contact-email">{company.officialEmail || company.managerEmail}</div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="employee-badge">{company.employeeCount || "N/A"}</div>
+                    </td>
+                    <td>
+                      <div className="location-cell">
+                        <MapPin size={14} className="loc-icon" />
+                        <span>{company.location?.city || "Remote"}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className={`status-pill ${company.status}`}>
+                        <span className="dot"></span>
+                        {company.status.charAt(0).toUpperCase() + company.status.slice(1)}
+                      </div>
+                    </td>
+                    <td>
+                      <button 
+                        className="view-btn"
+                        onClick={() => setSelectedCompany(company)}
+                      >
+                        <span className="view-dot"></span> View Application
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          
+          <div className="table-pagination">
+            <span className="pagination-info">Showing 1-{Math.min(companies.length, 10)} of {companies.length} results</span>
+            <div className="pagination-controls">
+              <button className="page-btn"><ChevronLeft size={16}/></button>
+              <button className="page-btn active">1</button>
+              <button className="page-btn">2</button>
+              <button className="page-btn">3</button>
+              <button className="page-btn"><ChevronRight size={16}/></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const [settingsForm, setSettingsForm] = useState({
+    platformName: "Ethereal Workplace",
+    supportEmail: "support@ethereal.com",
+    sessionTimeout: "30",
+    emailAlerts: true,
+    weeklyReports: true,
+  });
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  useEffect(() => {
+    // Fetch existing settings
+    import('firebase/firestore').then(({ doc, getDoc }) => {
+      const fetchSettings = async () => {
+        try {
+          const settingsRef = doc(db, "system_config", "admin_settings");
+          const settingsSnap = await getDoc(settingsRef);
+          if (settingsSnap.exists()) {
+            setSettingsForm(prev => ({ ...prev, ...settingsSnap.data() }));
+          }
+        } catch (error) {
+          console.error("Error fetching settings:", error);
+        }
+      };
+      fetchSettings();
+    });
+  }, []);
+
+  const handleSettingChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setSettingsForm(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value
+    }));
+  };
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      const settingsRef = doc(db, "system_config", "admin_settings");
+      await setDoc(settingsRef, {
+        ...settingsForm,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      toast.success("Settings saved successfully!");
+    } catch (error) {
+      console.error("Error saving settings:", error);
+      toast.error("Failed to save settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const renderSettings = () => (
+    <div className="admin-content animate-fade-in">
+      <div className="admin-header">
+        <div>
+          <h1 className="admin-page-title">Platform Settings</h1>
+          <p className="admin-page-subtitle">Configure global preferences and system behavior</p>
+        </div>
+        <button 
+          className="modal-btn-approve" 
+          onClick={handleSaveSettings}
+          disabled={savingSettings}
+          style={{ width: 'auto', padding: '10px 24px', opacity: savingSettings ? 0.7 : 1 }}
+        >
+          <Save size={18} /> {savingSettings ? "Saving..." : "Save Changes"}
+        </button>
+      </div>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+        {/* General Settings */}
+        <div className="admin-stat-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
+            <Building2 size={18} style={{ color: '#7664f5' }}/> General Configuration
+          </h3>
+          
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#64748B', marginBottom: '8px' }}>Platform Name</label>
+            <input 
+              type="text" 
+              name="platformName"
+              className="modal-password-input" 
+              style={{ marginTop: 0 }} 
+              value={settingsForm.platformName}
+              onChange={handleSettingChange}
+            />
+          </div>
+          
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#64748B', marginBottom: '8px' }}>Support Email Contact</label>
+            <input 
+              type="email" 
+              name="supportEmail"
+              className="modal-password-input" 
+              style={{ marginTop: 0 }} 
+              value={settingsForm.supportEmail}
+              onChange={handleSettingChange}
+            />
+          </div>
+        </div>
+
+        {/* Security & Notifications */}
+        <div className="admin-stat-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
+            <Shield size={18} style={{ color: '#10b981' }}/> Security & Alerts
+          </h3>
+          
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#64748B', marginBottom: '8px' }}>Session Timeout (Minutes)</label>
+            <select 
+              name="sessionTimeout"
+              className="modal-password-input" 
+              style={{ marginTop: 0 }}
+              value={settingsForm.sessionTimeout}
+              onChange={handleSettingChange}
+            >
+              <option value="15">15 Minutes</option>
+              <option value="30">30 Minutes</option>
+              <option value="60">1 Hour</option>
+              <option value="120">2 Hours</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: '#F8FAFC', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#1A1D27' }}>New Application Alerts</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>Receive email when new company registers</div>
+            </div>
+            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '24px' }}>
+              <input 
+                type="checkbox" 
+                name="emailAlerts"
+                style={{ opacity: 0, width: 0, height: 0 }} 
+                checked={settingsForm.emailAlerts}
+                onChange={handleSettingChange}
+              />
+              <span style={{ position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: settingsForm.emailAlerts ? '#7664f5' : '#CBD5E1', transition: '.4s', borderRadius: '24px' }}>
+                <span style={{ position: 'absolute', content: '""', height: '16px', width: '16px', left: settingsForm.emailAlerts ? '20px' : '4px', bottom: '4px', backgroundColor: 'white', transition: '.4s', borderRadius: '50%' }}></span>
+              </span>
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: '#F8FAFC', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#1A1D27' }}>Weekly Summary Reports</div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>Send platform statistics to admin email</div>
+            </div>
+            <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '24px' }}>
+              <input 
+                type="checkbox" 
+                name="weeklyReports"
+                style={{ opacity: 0, width: 0, height: 0 }} 
+                checked={settingsForm.weeklyReports}
+                onChange={handleSettingChange}
+              />
+              <span style={{ position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: settingsForm.weeklyReports ? '#7664f5' : '#CBD5E1', transition: '.4s', borderRadius: '24px' }}>
+                <span style={{ position: 'absolute', content: '""', height: '16px', width: '16px', left: settingsForm.weeklyReports ? '20px' : '4px', bottom: '4px', backgroundColor: 'white', transition: '.4s', borderRadius: '50%' }}></span>
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        .admin-layout {
+          display: flex;
+          min-height: 100vh;
+          background: #F7F8FA;
+          font-family: 'Inter', sans-serif;
+          color: #1A1D27;
+        }
+
+        /* Sidebar Styles */
+        .admin-sidebar {
+          width: 260px;
+          background: white;
+          border-right: 1px solid #EAECEF;
+          padding: 24px 0;
+          display: flex;
+          flex-direction: column;
+          position: fixed;
+          height: 100vh;
+          z-index: 10;
+        }
+
+        .sidebar-brand {
+          padding: 0 24px;
+          margin-bottom: 40px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          font-weight: 700;
+          font-size: 18px;
+          color: #1A1D27;
+        }
+        
+        .brand-icon {
+          width: 32px;
+          height: 32px;
+          background: #7664f5;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+        }
+
+        .sidebar-nav {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: 0 16px;
+          flex: 1;
+        }
+
+        .nav-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          border-radius: 12px;
+          cursor: pointer;
+          font-weight: 500;
+          color: #64748B;
+          transition: all 0.2s;
+          border: none;
+          background: transparent;
+          width: 100%;
+          text-align: left;
+          font-size: 14px;
+        }
+
+        .nav-item:hover {
+          background: #F3F4F6;
+          color: #1A1D27;
+        }
+
+        .nav-item.active {
+          background: #7664f5;
+          color: white;
+        }
+
+        .sidebar-footer {
+          padding: 16px;
+          margin-top: auto;
+        }
+
+        .logout-btn {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          border-radius: 12px;
+          cursor: pointer;
+          font-weight: 500;
+          color: #EF4444;
+          transition: all 0.2s;
+          border: none;
+          background: rgba(239, 68, 68, 0.05);
+          width: 100%;
+          font-size: 14px;
+        }
+
+        .logout-btn:hover {
+          background: rgba(239, 68, 68, 0.1);
+        }
+
+        /* Main Content Area */
+        .admin-main {
+          flex: 1;
+          margin-left: 260px;
+          padding: 40px;
+          max-width: 1400px;
+        }
+
+        .admin-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-end;
+          margin-bottom: 32px;
+        }
+
+        .admin-page-title {
+          font-size: 28px;
+          font-weight: 700;
+          letter-spacing: -0.5px;
+          margin-bottom: 6px;
+        }
+
+        .admin-page-subtitle {
+          color: #64748B;
+          font-size: 14px;
+        }
+
+        .admin-btn-outline {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 16px;
+          border: 1px solid #E2E8F0;
+          background: white;
+          border-radius: 100px;
+          font-weight: 500;
+          font-size: 13px;
+          cursor: pointer;
+          color: #1A1D27;
+          transition: all 0.2s;
+        }
+
+        .admin-btn-outline:hover {
+          background: #F8FAFC;
+        }
+
+        /* Stats Grid */
+        .admin-stats-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 24px;
+          margin-bottom: 32px;
+        }
+
+        .admin-stats-grid.four-cols {
+          grid-template-columns: repeat(4, 1fr);
+        }
+
+        .admin-stat-card {
+          background: white;
+          border-radius: 24px;
+          padding: 24px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .stat-card-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 16px;
+        }
+
+        .stat-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .stat-icon.purple { background: #F0EEFE; color: #7664f5; }
+        .stat-icon.blue { background: #EBF3FE; color: #3B82F6; }
+        .stat-icon.dark-purple { background: #EFEFFA; color: #5B4DE3; }
+        .stat-icon.pink { background: #FDF2F8; color: #EC4899; }
+        .stat-icon.gray { background: #F1F5F9; color: #475569; }
+        .stat-icon.red { background: #FEF2F2; color: #EF4444; }
+
+        .stat-badge {
+          background: #ECFDF5;
+          color: #10B981;
+          padding: 4px 8px;
+          border-radius: 100px;
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .stat-target {
+          font-size: 12px;
+          color: #64748B;
+          font-weight: 500;
+        }
+
+        .stat-toggle-switch {
+          width: 36px;
+          height: 20px;
+          background: #CBD5E1;
+          border-radius: 10px;
+          position: relative;
+        }
+        .stat-toggle-switch::after {
+          content: '';
+          position: absolute;
+          width: 16px;
+          height: 16px;
+          background: white;
+          border-radius: 50%;
+          top: 2px;
+          left: 2px;
+        }
+
+        .stat-value {
+          font-size: 32px;
+          font-weight: 700;
+          margin-bottom: 4px;
+          color: #1A1D27;
+        }
+
+        .stat-label {
+          font-size: 11px;
+          font-weight: 600;
+          color: #64748B;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+        }
+
+        .stat-label-top {
+          font-size: 13px;
+          font-weight: 500;
+          color: #64748B;
+          margin-bottom: 8px;
+        }
+
+        /* Chart Card */
+        .admin-chart-card {
+          background: white;
+          border-radius: 24px;
+          padding: 32px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .chart-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          margin-bottom: 40px;
+        }
+
+        .chart-title {
+          font-size: 16px;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+
+        .chart-subtitle {
+          font-size: 13px;
+          color: #64748B;
+        }
+
+        .chart-toggles {
+          display: flex;
+          background: #F1F5F9;
+          border-radius: 100px;
+          padding: 4px;
+        }
+
+        .chart-toggle {
+          padding: 6px 16px;
+          border: none;
+          background: transparent;
+          border-radius: 100px;
+          font-size: 12px;
+          font-weight: 500;
+          color: #64748B;
+          cursor: pointer;
+        }
+
+        .chart-toggle.active {
+          background: #7664f5;
+          color: white;
+        }
+
+        .chart-body {
+          height: 240px;
+          display: flex;
+          align-items: flex-end;
+          position: relative;
+        }
+
+        .mock-chart {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-end;
+          width: 100%;
+          height: 100%;
+          gap: 12px;
+        }
+
+        .chart-bar {
+          flex: 1;
+          height: 100%;
+          display: flex;
+          align-items: flex-end;
+        }
+
+        .bar-fill {
+          width: 100%;
+          background: #D5D1FC;
+          border-radius: 16px 16px 0 0;
+          transition: all 0.3s;
+        }
+
+        .bar-fill.active {
+          background: #7664f5;
+        }
+
+        /* Table Card */
+        .admin-table-card {
+          background: white;
+          border-radius: 24px;
+          padding: 32px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .table-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          margin-bottom: 24px;
+        }
+
+        .table-title {
+          font-size: 18px;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+
+        .table-subtitle {
+          font-size: 13px;
+          color: #64748B;
+        }
+
+        .table-actions {
+          display: flex;
+          gap: 12px;
+        }
+
+        .admin-btn-gray {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 8px 14px;
+          background: #F8FAFC;
+          border: 1px solid #E2E8F0;
+          border-radius: 100px;
+          font-size: 13px;
+          font-weight: 500;
+          color: #475569;
+          cursor: pointer;
+        }
+
+        .admin-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+
+        .admin-table th {
+          text-align: left;
+          padding: 16px;
+          font-size: 11px;
+          font-weight: 600;
+          color: #64748B;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          background: #F8FAFC;
+          border-bottom: 1px solid #E2E8F0;
+        }
+
+        .admin-table th:first-child { border-radius: 8px 0 0 8px; }
+        .admin-table th:last-child { border-radius: 0 8px 8px 0; }
+
+        .admin-table td {
+          padding: 20px 16px;
+          border-bottom: 1px solid #F1F5F9;
+          vertical-align: middle;
+        }
+
+        .table-cell-company {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .company-avatar {
+          width: 40px;
+          height: 40px;
+          background: #F0EEFE;
+          color: #7664f5;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 600;
+          font-size: 14px;
+        }
+
+        .company-name-bold {
+          font-weight: 600;
+          font-size: 14px;
+          color: #1A1D27;
+        }
+
+        .company-subtext {
+          font-size: 12px;
+          color: #64748B;
+          margin-top: 2px;
+        }
+
+        .contact-name {
+          font-weight: 500;
+          font-size: 14px;
+          color: #1A1D27;
+        }
+
+        .contact-email {
+          font-size: 12px;
+          color: #64748B;
+          margin-top: 2px;
+        }
+
+        .employee-badge {
+          display: inline-block;
+          padding: 4px 10px;
+          background: #F1F5F9;
+          border-radius: 100px;
+          font-size: 12px;
+          font-weight: 500;
+          color: #475569;
+        }
+
+        .location-cell {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: #64748B;
+          font-size: 13px;
+        }
+
+        .loc-icon {
+          color: #7664f5;
+        }
+
+        .status-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 10px;
+          border-radius: 100px;
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .status-pill .dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+
+        .status-pill.pending {
+          background: #FEF9C3;
+          color: #A16207;
+        }
+        .status-pill.pending .dot { background: #EAB308; }
+
+        .status-pill.approved {
+          background: #DCFCE7;
+          color: #15803D;
+        }
+        .status-pill.approved .dot { background: #22C55E; }
+
+        .status-pill.rejected {
+          background: #FEE2E2;
+          color: #B91C1C;
+        }
+        .status-pill.rejected .dot { background: #EF4444; }
+
+        .view-btn {
+          background: #F0EEFE;
+          color: #7664f5;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 100px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: all 0.2s;
+        }
+
+        .view-btn:hover {
+          background: #E4E0FD;
+        }
+
+        .view-dot {
+          width: 6px;
+          height: 6px;
+          background: #7664f5;
+          border-radius: 50%;
+        }
+
+        .table-pagination {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding-top: 24px;
+        }
+
+        .pagination-info {
+          font-size: 13px;
+          color: #64748B;
+        }
+
+        .pagination-controls {
+          display: flex;
+          gap: 4px;
+        }
+
+        .page-btn {
+          width: 32px;
+          height: 32px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 50%;
+          border: none;
+          background: transparent;
+          color: #475569;
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+        }
+
+        .page-btn.active {
+          background: #7664f5;
+          color: white;
+        }
+
+        .page-btn:hover:not(.active) {
+          background: #F1F5F9;
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(15, 23, 42, 0.4);
+          backdrop-filter: blur(4px);
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .modal-content {
+          background: white;
+          border-radius: 24px;
+          padding: 32px;
+          width: 100%;
+          max-width: 500px;
+          box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+
+        .modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 24px;
+        }
+
+        .modal-title {
+          font-size: 20px;
+          font-weight: 700;
+        }
+
+        .modal-close {
+          background: transparent;
+          border: none;
+          color: #64748B;
+          cursor: pointer;
+        }
+
+        .modal-body {
+          margin-bottom: 24px;
+        }
+
+        .modal-detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 12px 0;
+          border-bottom: 1px solid #F1F5F9;
+          font-size: 14px;
+        }
+
+        .modal-detail-label {
+          color: #64748B;
+          font-weight: 500;
+        }
+
+        .modal-detail-value {
+          font-weight: 600;
+          color: #1A1D27;
+        }
+
+        .modal-password-input {
+          width: 100%;
+          padding: 12px 16px;
+          border: 1px solid #E2E8F0;
+          border-radius: 12px;
+          margin-top: 16px;
+          font-size: 14px;
+        }
+
+        .modal-actions {
+          display: flex;
+          gap: 12px;
+        }
+
+        .modal-btn-reject {
+          flex: 1;
+          padding: 12px;
+          background: #FEF2F2;
+          color: #EF4444;
+          border: none;
+          border-radius: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+
+        .modal-btn-approve {
+          flex: 1;
+          padding: 12px;
+          background: #7664f5;
+          color: white;
+          border: none;
+          border-radius: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+
+        .animate-fade-in {
+          animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        .settings-placeholder-card {
+          background: white;
+          border-radius: 24px;
+          padding: 60px;
+          text-align: center;
+          color: #64748B;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+          margin-top: 24px;
+        }
+
+        .settings-icon-large {
+          margin-bottom: 16px;
+          color: #CBD5E1;
+        }
+
+      `}</style>
+
+      <div className="admin-layout">
+        <aside className="admin-sidebar">
+          <div className="sidebar-brand">
+            <div className="brand-icon"><Building2 size={18} /></div>
+            Admin Portal
+          </div>
+          <nav className="sidebar-nav">
+            <button 
+              className={`nav-item ${activeTab === "home" ? "active" : ""}`}
+              onClick={() => setActiveTab("home")}
+            >
+              <Home size={18} /> Home Overview
+            </button>
+            <button 
+              className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`}
+              onClick={() => setActiveTab("dashboard")}
+            >
+              <LayoutDashboard size={18} /> Applications
+            </button>
+            <button 
+              className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
+              onClick={() => setActiveTab("settings")}
+            >
+              <Settings size={18} /> Settings
+            </button>
+          </nav>
+          <div className="sidebar-footer">
+            <button className="logout-btn" onClick={handleLogout}>
+              <LogOut size={18} /> Logout
+            </button>
+          </div>
+        </aside>
+
+        <main className="admin-main">
+          {activeTab === "home" && renderHome()}
+          {activeTab === "dashboard" && renderDashboard()}
+          {activeTab === "settings" && renderSettings()}
+        </main>
+
+        {/* Action Modal */}
+        {selectedCompany && (
+          <div className="modal-overlay" onClick={() => { setSelectedCompany(null); setManagerPassword(""); }}>
+            <div className="modal-content" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 className="modal-title">Application Details</h3>
+                <button className="modal-close" onClick={() => { setSelectedCompany(null); setManagerPassword(""); }}>
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="modal-body">
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Company</span>
+                  <span className="modal-detail-value">{selectedCompany.companyName}</span>
+                </div>
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Applicant</span>
+                  <span className="modal-detail-value">{selectedCompany.adminFullName || selectedCompany.managerName}</span>
+                </div>
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Manager Mail ID</span>
+                  <span className="modal-detail-value">{selectedCompany.managerEmail}</span>
+                </div>
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Phone Number</span>
+                  <span className="modal-detail-value">{selectedCompany.phone || "Not Provided"}</span>
+                </div>
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Registered Password</span>
+                  <span className="modal-detail-value">{selectedCompany.password || "Not Provided (Will generate automatic password)"}</span>
+                </div>
+                <div className="modal-detail-row">
+                  <span className="modal-detail-label">Status</span>
+                  <span className={`status-pill ${selectedCompany.status}`}>
+                    <span className="dot"></span>
+                    {selectedCompany.status.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              
+              {selectedCompany.status === 'pending' && (
+                <div style={{ marginBottom: '24px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#64748B', marginBottom: '8px' }}>Assign Custom Password (Optional)</label>
+                  <input
+                    type="text"
+                    className="modal-password-input"
+                    placeholder="Leave empty to use registered or automatic password"
+                    value={managerPassword}
+                    onChange={(e) => setManagerPassword(e.target.value)}
+                    style={{ marginTop: 0 }}
+                  />
+                </div>
+              )}
+
+              {selectedCompany.status === 'pending' && (
+                <div className="modal-actions">
+                  <button 
+                    className="modal-btn-reject"
+                    onClick={() => handleReject(selectedCompany.id)}
+                    disabled={actionLoading === selectedCompany.id}
+                  >
+                    {actionLoading === selectedCompany.id ? <RefreshCw className="spinner" size={18} /> : <X size={18} />} Reject
+                  </button>
+                  <button 
+                    className="modal-btn-approve"
+                    onClick={() => handleApprove(selectedCompany)}
+                    disabled={actionLoading === selectedCompany.id}
+                  >
+                    {actionLoading === selectedCompany.id ? <RefreshCw className="spinner" size={18} /> : <Check size={18} />} Approve
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+};
 
 export default AdminDashboard;

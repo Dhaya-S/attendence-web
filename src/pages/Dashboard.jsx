@@ -6,15 +6,62 @@ import {
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
+import { useState, useEffect } from "react";
+import { doc, getDoc, collection, query, onSnapshot } from "firebase/firestore";
+import { db } from "../services/firebase";
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { currentUser } = useAuth();
+  const [feed, setFeed] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const feed = [
-    { name: "David Kola", role: "Product Designer", time: "08:24 AM", status: "Checked-in", location: "New York, USA", img: "https://i.pravatar.cc/150?u=david" },
-    { name: "Elena Rodriguez", role: "Lead Developer", time: "08:35 AM", status: "Checked-in", location: "Berlin, Germany", img: "https://i.pravatar.cc/150?u=elena" },
-    { name: "Julian Wright", role: "Sales Manager", time: "09:42 AM", status: "Late", location: "London, UK", img: "https://i.pravatar.cc/150?u=julian" },
-  ];
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let unsubscribeFunc;
+
+    const fetchCompanyData = async () => {
+      try {
+        const userEmail = currentUser.email.toLowerCase().trim();
+        const userDocRef = doc(db, "approved_users", userEmail);
+        const userDocSnap = await getDoc(userDocRef);
+
+        if (userDocSnap.exists()) {
+          const companyId = userDocSnap.data().companyId;
+          
+          const q = query(collection(db, "approved_companies", companyId, "users"));
+          unsubscribeFunc = onSnapshot(q, (snapshot) => {
+            const usersList = snapshot.docs.map((docSnap) => {
+              const data = docSnap.data();
+              return {
+                id: docSnap.id,
+                name: data.name || "Employee",
+                role: data.role === "manager" ? "Manager" : (data.designation || "Staff"),
+                time: "09:00 AM", // In a full implementation, you would join this with the 'attendance' subcollection
+                status: data.status === "active" ? "Checked-in" : (data.status === "approved" ? "Checked-in" : "Offline"),
+                location: data.location || "Office HQ",
+                img: `https://i.pravatar.cc/150?u=${data.email}`
+              };
+            });
+            setFeed(usersList);
+            setLoading(false);
+          });
+        } else {
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Error fetching live feed:", error);
+        setLoading(false);
+      }
+    };
+
+    fetchCompanyData();
+
+    return () => {
+      if (unsubscribeFunc) unsubscribeFunc();
+    };
+  }, [currentUser]);
 
   return (
     <div className="premium-page">
@@ -206,47 +253,47 @@ const Dashboard = () => {
         <div className="insights-v2 animate-fade-up delay-3">
            <div className="insight-card-v2">
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-                 <BarChart3 size={18} style={{ color: '#6366f1' }} />
-                 <span style={{ fontWeight: '700' }}>Peak Login Hours</span>
+                 <Users size={18} style={{ color: '#6366f1' }} />
+                 <span style={{ fontWeight: '700' }}>Workforce Distribution</span>
               </div>
-              <div className="bar-chart-v2">
-                 {[30, 45, 60, 95, 80, 50, 40].map((h, i) => (
-                    <div key={i} className={`chart-bar-v2 ${i === 3 ? 'active' : ''}`} style={{ height: `${h}%` }}></div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                 {Object.entries(feed.reduce((acc, user) => {
+                    acc[user.role] = (acc[user.role] || 0) + 1;
+                    return acc;
+                 }, {})).map(([role, count], i) => (
+                    <div key={i} style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '12px', flex: '1 1 calc(50% - 12px)', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                       <span style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>{role}</span>
+                       <span style={{ fontSize: '16px', fontWeight: '800', color: '#1e293b' }}>{count}</span>
+                    </div>
                  ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8', marginTop: '10px' }}>
-                 <span>07:00</span>
-                 <span>08:00</span>
-                 <span>09:00</span>
-                 <span>10:00</span>
-                 <span>11:00</span>
-                 <span>12:00</span>
-                 <span>13:00</span>
+                 {feed.length === 0 && (
+                    <div style={{ fontSize: '13px', color: '#64748b', padding: '20px', textAlign: 'center', width: '100%' }}>No employees found.</div>
+                 )}
               </div>
            </div>
 
            <div className="insight-card-v2" style={{ textAlign: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', justifyContent: 'center' }}>
                  <Zap size={18} style={{ color: '#6366f1' }} />
-                 <span style={{ fontWeight: '700' }}>On-time Performance</span>
+                 <span style={{ fontWeight: '700' }}>Live Attendance</span>
               </div>
-              <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '32px' }}>Weekly team punctuality score</p>
+              <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '32px' }}>Current active workforce</p>
               
               <div className="radial-chart-v2">
                  <svg className="radial-svg" width="150" height="150">
                     <circle className="radial-bg" cx="75" cy="75" r="70" />
-                    <circle className="radial-progress" cx="75" cy="75" r="70" style={{ strokeDashoffset: '40' }} />
+                    <circle className="radial-progress" cx="75" cy="75" r="70" style={{ strokeDashoffset: feed.length > 0 ? 440 - (440 * (feed.filter(u => u.status === 'Checked-in').length / feed.length)) : 440 }} />
                  </svg>
-                 <div className="radial-text">94%</div>
+                 <div className="radial-text">{feed.length > 0 ? Math.round((feed.filter(u => u.status === 'Checked-in').length / feed.length) * 100) : 0}%</div>
               </div>
 
               <div style={{ marginTop: '32px', display: 'flex', justifyContent: 'center', gap: '20px', fontSize: '12px' }}>
-                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6366f1' }}></div> On-time (847)</div>
-                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f1f5f9' }}></div> Delayed (54)</div>
+                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6366f1' }}></div> Active ({feed.filter(u => u.status === 'Checked-in').length})</div>
+                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f1f5f9' }}></div> Offline ({feed.filter(u => u.status !== 'Checked-in').length})</div>
               </div>
 
               <button style={{ marginTop: '32px', width: '100%', background: '#f1f5f9', border: 'none', padding: '12px', borderRadius: '12px', fontWeight: '600', color: '#6366f1', cursor: 'pointer' }}>
-                 Download Full Report
+                 View Directory
               </button>
            </div>
         </div>

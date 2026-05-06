@@ -1,85 +1,85 @@
-import { useAuth } from "../contexts/AuthContext";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { LogOut, Bell, User, LayoutDashboard, Building2, Settings } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
+import { 
+  LogOut, User, Bell, Menu, X, 
+  LayoutDashboard, Settings, Building2 
+} from "lucide-react";
+import toast from "react-hot-toast";
 
 const Navbar = () => {
-  const { currentUser, userRole, logout } = useAuth();
+  const { logout, currentUser, userRole } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 20);
+    };
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   const handleLogout = async () => {
-    await logout();
-    navigate("/login");
+    try {
+      await logout();
+      toast.success("Logged out successfully");
+      navigate("/");
+    } catch (error) {
+      toast.error("Failed to log out");
+    }
   };
+
+  const navLinks = [
+    { name: "Dashboard", path: userRole === "admin" ? "/admin" : "/dashboard", icon: LayoutDashboard },
+    { name: "Settings", path: "/settings", icon: Settings },
+  ];
+
+  // If not admin, they might want to register a company or see registration status
+  if (userRole !== "admin") {
+    navLinks.splice(1, 0, { name: "Register Company", path: "/register-company", icon: Building2 });
+  }
 
   const isActive = (path) => location.pathname === path;
 
   return (
-    <nav className="navbar">
-      <div className="navbar-inner">
+    <>
+      <nav className={`premium-navbar-v2 ${isScrolled ? "scrolled" : ""} animate-centered-fade-up`}>
         <div className="navbar-brand" onClick={() => navigate(userRole === "admin" ? "/admin" : "/dashboard")}>
           <div className="brand-icon">
-            <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
-              <path d="M12 6v6l4 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
+             <Building2 size={20} />
           </div>
           <span className="brand-text">Ethereal Workplace</span>
         </div>
 
-        <div className="navbar-links">
-          <a
-            className={`nav-link ${isActive("/home") ? "active" : ""}`}
-            onClick={() => navigate("/home")}
-          >
-            Home
-          </a>
-          {userRole === "admin" && (
-            <>
-              <a
-                className={`nav-link ${isActive("/admin") ? "active" : ""}`}
-                onClick={() => navigate("/admin")}
-              >
-                Dashboard
-              </a>
-            </>
-          )}
-          {userRole === "user" && (
-            <>
-              <a
-                className={`nav-link ${isActive("/dashboard") ? "active" : ""}`}
-                onClick={() => navigate("/dashboard")}
-              >
-                Dashboard
-              </a>
-            </>
-          )}
-          <a 
-            className={`nav-link ${isActive("/settings") ? "active" : ""}`}
-            onClick={() => navigate("/settings")}
-          >
-            Settings
-          </a>
+        <div className="nav-links-wrap">
+          {navLinks.map((link) => (
+            <span
+              key={link.path}
+              className={`nav-link-v2 ${isActive(link.path) ? "active" : ""}`}
+              onClick={() => navigate(link.path)}
+            >
+              {link.name}
+            </span>
+          ))}
         </div>
 
         <div className="navbar-actions">
-          <button className="nav-icon-btn" title="Notifications">
-            <Bell size={18} />
-            <span className="notification-dot"></span>
-          </button>
-          <div className="nav-user-info">
-            <div className="nav-avatar">
-              <User size={16} />
+          <Bell size={20} className="nav-action-icon" onClick={() => navigate("/settings")} />
+          
+          <div className="nav-user-profile" onClick={() => navigate("/settings")}>
+            <div className="user-meta">
+              <span className="user-name-short">{currentUser?.email?.split('@')[0]}</span>
+              <span className="user-tag">{userRole}</span>
             </div>
-            <span className="nav-email">{currentUser?.email?.split("@")[0]}</span>
+            <div className="nav-avatar">
+              <User size={18} />
+            </div>
           </div>
-          <button className="nav-logout-btn" onClick={handleLogout} title="Sign Out">
-            <LogOut size={16} />
-            <span>Sign Out</span>
-          </button>
         </div>
-      </div>
-    </nav>
+      </nav>
+    </>
   );
 };
 
