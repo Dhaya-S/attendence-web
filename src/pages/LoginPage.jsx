@@ -86,30 +86,68 @@ const LoginPage = () => {
 
     setLoading(true);
     try {
-      // Instead of creating auth user directly, submit registration request
-      await addDoc(collection(db, "companies"), {
-        companyName: companyName,
-        adminFullName: fullName,
+      // 1. Create the Auth User immediately
+      const userCred = await createUserWithEmailAndPassword(auth, workEmail, password);
+      const uid = userCred.user.uid;
+      const normalizedEmail = workEmail.toLowerCase().trim();
+      
+      // 2. Generate a unique companyId (use the auto-ID from approved_companies)
+      const companyRef = doc(collection(db, "approved_companies"));
+      const companyId = companyRef.id;
+
+      // 3. Initialize the Company Document
+      await setDoc(companyRef, {
+        companyName,
         officialEmail: workEmail,
-        phone: phone,
-        status: "pending",
-        createdAt: serverTimestamp(),
+        phone: phone || "",
         managerName: fullName,
         managerEmail: workEmail,
-        password: password,
+        adminFullName: fullName,
+        status: "active",
+        createdAt: serverTimestamp(),
+        approvedAt: serverTimestamp(),
       });
 
-      toast.success("Registration request submitted! Please wait for admin approval.", {
-        duration: 5000,
+      // 4. Create the Manager Document in the company's users subcollection
+      const managerDocId = normalizedEmail.replace(/[.#$/\[\]]/g, "_");
+      await setDoc(doc(db, "approved_companies", companyId, "users", managerDocId), {
+        uid: uid,
+        email: normalizedEmail,
+        name: fullName,
+        role: "manager",
+        status: "approved",
+        companyId: companyId,
+        joinedAt: serverTimestamp(),
       });
+
+      // 5. Create the Global Mapping for Rules
+      await setDoc(doc(db, "approved_users", normalizedEmail), {
+        uid: uid,
+        companyId: companyId,
+        role: "manager",
+        email: normalizedEmail,
+        name: fullName,
+        status: "active",
+        updatedAt: serverTimestamp()
+      });
+
+      // 6. Create the Company User entry for AuthContext and rules
+      await setDoc(doc(db, "company_users", uid), {
+        email: normalizedEmail,
+        companyId: companyId,
+        role: "manager"
+      });
+
+      toast.success("Account and company created successfully!");
       
-      setSignupData({
-        fullName: "", companyName: "", workEmail: "", phone: "", password: "", confirmPassword: "", agreeTerms: false
-      });
-      setIsLoginTab(true);
+      // The navigation will happen via useEffect when userRole is detected,
+      // but we force it here for immediate feedback
+      navigate("/home");
     } catch (error) {
       console.error("Signup error:", error);
-      toast.error("Failed to submit registration. Please try again.");
+      let message = "Failed to create account.";
+      if (error.code === 'auth/email-already-in-use') message = "This email is already registered.";
+      toast.error(message);
     }
     setLoading(false);
   };

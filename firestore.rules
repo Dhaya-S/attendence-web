@@ -13,11 +13,22 @@ service cloud.firestore {
        return isSignedIn() && exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
     }
     
-    function userCompanyId() {
-      // Fetch the companyId from the global approved_users mapping using the user's email.
+    // Helper to fetch the user's mapping document once
+    function getApprovedUser() {
       let email = request.auth.token.email;
       let userPath = /databases/$(database)/documents/approved_users/$(email);
-      return exists(userPath) ? get(userPath).data.companyId : "NONE";
+      return exists(userPath) ? get(userPath).data : null;
+    }
+
+    function userCompanyId() {
+      let user = getApprovedUser();
+      return user != null ? user.companyId : "NONE";
+    }
+
+    function isManager() {
+      let user = getApprovedUser();
+      // Case-insensitive check: handles "manager", "Manager", "MANAGER"
+      return user != null && (user.role == "manager" || user.role == "Manager" || user.role == "MANAGER");
     }
 
     // --- RULES ---
@@ -26,23 +37,28 @@ service cloud.firestore {
     match /approved_users/{email} {
       allow read: if isSignedIn() && (
         request.auth.token.email == email || 
+        isManager() ||  // Managers need to check if an email is already registered
         (resource != null && resource.data.companyId == userCompanyId()) || 
         isAdmin()
       );
       
-      allow write: if isAdmin() || (
+      // Managers can create new employee approved_user mappings
+      allow create: if isAdmin() || (isSignedIn() && (
+        (isManager() && request.resource.data.companyId == userCompanyId()) ||
+        (email == request.auth.token.email && 
+         get(/databases/$(database)/documents/approved_companies/$(request.resource.data.companyId)).data.managerEmail == email &&
+         (request.resource.data.role == "manager" || request.resource.data.role == "Manager" || request.resource.data.role == "MANAGER"))
+      ));
+
+      // Users can only update their own entry without changing role/companyId
+      allow update: if isAdmin() || (
         isSignedIn() && request.auth.token.email == email &&
         // Prevent modification of critical fields
         request.resource.data.role == resource.data.role &&
         request.resource.data.companyId == resource.data.companyId
       );
 
-      // Managers can create new employee mappings
-      allow create: if isAdmin() || (
-        isSignedIn() && exists(/databases/$(database)/documents/approved_users/$(request.auth.token.email)) &&
-        get(/databases/$(database)/documents/approved_users/$(request.auth.token.email)).data.role == "manager" &&
-        request.resource.data.companyId == userCompanyId()
-      );
+      allow delete: if isAdmin();
     }
     
     match /admin_users/{uid} {
@@ -63,9 +79,12 @@ service cloud.firestore {
     match /approved_companies/{companyId} {
       // Company document itself
       allow read: if isSignedIn() && (
-        userCompanyId() == companyId || isAdmin()
+        userCompanyId() == companyId || 
+        request.auth.token.email == resource.data.managerEmail ||
+        isAdmin()
       );
-      allow write: if isAdmin();
+      allow create: if isSignedIn() && request.resource.data.managerEmail == request.auth.token.email;
+      allow update, delete: if isAdmin() || (isSignedIn() && userCompanyId() == companyId && isManager());
 
       // ── Users subcollection ──────────────────────────────────────
       match /users/{employeeId} {
@@ -76,18 +95,87 @@ service cloud.firestore {
           isAdmin()
         );
         allow write: if isSignedIn() && (
-          request.auth.token.email == employeeId ||
-          (resource == null && request.resource.data.companyId == companyId && userCompanyId() == companyId) ||
-          (resource != null && resource.data.companyId == companyId && userCompanyId() == companyId) ||
+          ((request.auth.token.email == employeeId || request.resource.data.email == request.auth.token.email) && (resource == null || request.resource.data.role == resource.data.role)) ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
+
+        // ── User Attendance ─────────────────────────────────────────
+        // Attendance docs stored at users/{email}/attendance/{date}
+        match /attendance/{docId} {
+          allow read: if isSignedIn() && (
+            request.auth.token.email == employeeId ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow write: if isSignedIn() && (
+            request.auth.token.email == employeeId ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+        }
+
+        // ── User Leave Requests ─────────────────────────────────────
+        match /leave_requests/{docId} {
+          allow read: if isSignedIn() && (
+            request.auth.token.email == employeeId ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow create: if isSignedIn() && request.auth.token.email == employeeId;
+          allow update: if isSignedIn() && (
+            (request.auth.token.email == employeeId && request.resource.data.status == resource.data.status) ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow delete: if isSignedIn() && (
+            (request.auth.token.email == employeeId && resource.data.status == 'pending') ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+        }
+
+        // ── User Notifications ──────────────────────────────────────
+        match /notifications/{docId} {
+          allow read: if isSignedIn() && (
+            request.auth.token.email == employeeId ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow write: if isSignedIn() && (
+            request.auth.token.email == employeeId ||   // Employee marks as read
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+        }
+
+        // ── User Overtime Requests ──────────────────────────────────
+        match /overtime_requests/{docId} {
+          allow read: if isSignedIn() && (
+            request.auth.token.email == employeeId ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow create: if isSignedIn() && request.auth.token.email == employeeId;
+          allow update: if isSignedIn() && (
+            (request.auth.token.email == employeeId && request.resource.data.status == resource.data.status) ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+          allow delete: if isSignedIn() && (
+            (request.auth.token.email == employeeId && resource.data.status == 'pending') ||
+            (userCompanyId() == companyId && isManager()) ||
+            isAdmin()
+          );
+        }
       }
+
 
       // ── Attendance subcollection ─────────────────────────────────────
       match /attendance/{targetUid} {
         allow read, write: if isSignedIn() && (
           request.auth.uid == targetUid ||
-          userCompanyId() == companyId ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
 
@@ -95,7 +183,7 @@ service cloud.firestore {
         match /records/{recordId} {
           allow read, write: if isSignedIn() && (
             request.auth.uid == targetUid ||
-            userCompanyId() == companyId ||
+            (userCompanyId() == companyId && isManager()) ||
             isAdmin()
           );
         }
@@ -105,16 +193,21 @@ service cloud.firestore {
       match /leave_requests/{id} {
         allow read: if isSignedIn() && (
           (resource != null && resource.data.userId == request.auth.uid) ||
-          userCompanyId() == companyId ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
         allow create: if isSignedIn() && (
           request.resource.data.userId == request.auth.uid &&
           userCompanyId() == companyId
         );
-        allow update, delete: if isSignedIn() && (
-          (resource != null && resource.data.userId == request.auth.uid) ||
-          userCompanyId() == companyId ||
+        allow update: if isSignedIn() && (
+          (resource != null && resource.data.userId == request.auth.uid && request.resource.data.status == resource.data.status) ||
+          (userCompanyId() == companyId && isManager()) ||
+          isAdmin()
+        );
+        allow delete: if isSignedIn() && (
+          (resource != null && resource.data.userId == request.auth.uid && resource.data.status == "pending") ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
       }
@@ -123,16 +216,21 @@ service cloud.firestore {
       match /overtime_requests/{id} {
         allow read: if isSignedIn() && (
           (resource != null && resource.data.userId == request.auth.uid) ||
-          userCompanyId() == companyId ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
         allow create: if isSignedIn() && (
           request.resource.data.userId == request.auth.uid &&
           userCompanyId() == companyId
         );
-        allow update, delete: if isSignedIn() && (
-          (resource != null && resource.data.userId == request.auth.uid) ||
-          userCompanyId() == companyId ||
+        allow update: if isSignedIn() && (
+          (resource != null && resource.data.userId == request.auth.uid && request.resource.data.status == resource.data.status) ||
+          (userCompanyId() == companyId && isManager()) ||
+          isAdmin()
+        );
+        allow delete: if isSignedIn() && (
+          (resource != null && resource.data.userId == request.auth.uid && resource.data.status == "pending") ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
       }
@@ -141,11 +239,31 @@ service cloud.firestore {
       match /notifications/{id} {
         allow read: if isSignedIn() && (
           (resource != null && resource.data.userId == request.auth.uid) ||
-          userCompanyId() == companyId ||
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
         allow write: if isSignedIn() && (
-          userCompanyId() == companyId ||
+          (userCompanyId() == companyId && isManager()) ||
+          isAdmin()
+        );
+      }
+
+      // ── Company Calendar ─────────────────────────────────────────────
+      // Manager marks holidays / WFH days; all company members can read.
+      match /company_calendar/{eventId} {
+        allow read: if isSignedIn() && (userCompanyId() == companyId || isAdmin());
+        allow write: if isSignedIn() && (
+          (userCompanyId() == companyId && isManager()) ||
+          isAdmin()
+        );
+      }
+
+      // ── Global Notifications ─────────────────────────────────────────
+      // Broadcast notifications visible to everyone in the company.
+      match /global_notifications/{id} {
+        allow read: if isSignedIn() && (userCompanyId() == companyId || isAdmin());
+        allow write: if isSignedIn() && (
+          (userCompanyId() == companyId && isManager()) ||
           isAdmin()
         );
       }
@@ -153,17 +271,45 @@ service cloud.firestore {
 
     // 3. Collection Group Queries (Essential for Managers using collectionGroup)
     match /{path=**}/records/{recordId} {
-      allow read, write: if isSignedIn() && (
-        (resource != null && resource.data.companyId == userCompanyId()) ||
-        (resource == null) ||
+      allow read: if isSignedIn() && (
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow write: if isSignedIn() && (
+        (resource == null && request.resource.data.userId == request.auth.uid && request.resource.data.companyId == userCompanyId()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
     
+    // Collection group for user-scoped attendance subcollections
+    // e.g. approved_companies/{cid}/users/{email}/attendance/{docId}
+    match /{path=**}/attendance/{docId} {
+      allow read: if isSignedIn() && (
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow write: if isSignedIn() && (
+        (resource == null && request.resource.data.userId == request.auth.uid && request.resource.data.companyId == userCompanyId()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        isAdmin()
+      );
+    }
+
     match /{path=**}/leave_requests/{requestId} {
-      allow read, write: if isSignedIn() && (
-        (resource != null && resource.data.companyId == userCompanyId()) ||
-        (resource == null && request.resource.data.companyId == userCompanyId()) ||
+      allow read: if isSignedIn() && (
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow write: if isSignedIn() && (
+        (resource == null && request.resource.data.userId == request.auth.uid && request.resource.data.companyId == userCompanyId()) ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
@@ -194,61 +340,71 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn() && (
         request.auth.token.email == userId || 
-        resource.data.email == request.auth.token.email ||
-        resource.data.companyId == userCompanyId() ||
+        (resource != null && resource.data.email == request.auth.token.email) ||
+        (resource != null && resource.data.companyId == userCompanyId()) ||
         isAdmin()
       );
       allow write: if isSignedIn() && (
-        request.auth.token.email == userId ||
-        (resource == null && request.resource.data.companyId == userCompanyId()) ||
-        (resource != null && resource.data.companyId == userCompanyId()) ||
+        (request.auth.token.email == userId && (resource == null || request.resource.data.role == resource.data.role)) ||
+        (resource == null && request.resource.data.companyId == userCompanyId() && isManager()) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
 
     match /notifications/{id} {
       allow read: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.companyId == userCompanyId() ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
       allow write: if isSignedIn() && (
-        (resource == null && request.resource.data.companyId == userCompanyId()) ||
-        (resource != null && resource.data.companyId == userCompanyId()) ||
+        (resource == null && request.resource.data.companyId == userCompanyId() && isManager()) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
 
     match /leave_requests/{id} {
       allow read: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.companyId == userCompanyId() ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
       allow create: if isSignedIn() && (
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.companyId == userCompanyId()
       );
-      allow update, delete: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.companyId == userCompanyId() ||
+      allow update: if isSignedIn() && (
+        (resource != null && resource.data.userId == request.auth.uid && request.resource.data.status == resource.data.status) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        (resource != null && resource.data.userId == request.auth.uid && resource.data.status == "pending") ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
 
     match /overtime_requests/{id} {
       allow read: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.companyId == userCompanyId() ||
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
       allow create: if isSignedIn() && (
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.companyId == userCompanyId()
       );
-      allow update, delete: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.companyId == userCompanyId() ||
+      allow update: if isSignedIn() && (
+        (resource != null && resource.data.userId == request.auth.uid && request.resource.data.status == resource.data.status) ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        (resource != null && resource.data.userId == request.auth.uid && resource.data.status == "pending") ||
+        (resource != null && resource.data.companyId == userCompanyId() && isManager()) ||
         isAdmin()
       );
     }
@@ -263,3 +419,4 @@ service cloud.firestore {
     }
   }
 }
+
