@@ -58,7 +58,7 @@ service cloud.firestore {
         request.resource.data.companyId == resource.data.companyId
       );
 
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (isSignedIn() && isManager() && resource.data.companyId == userCompanyId());
     }
     
     match /admin_users/{uid} {
